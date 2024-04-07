@@ -1812,6 +1812,159 @@ public:
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class EC4Display_Midi_FeedbackProcessor : public Midi_FeedbackProcessor
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+{
+private:
+    int channel_;
+    int displayType_;
+    string lastStringSent_;
+
+public:
+    virtual ~EC4Display_Midi_FeedbackProcessor() {}
+    EC4Display_Midi_FeedbackProcessor(CSurfIntegrator *const csi, Midi_ControlSurface *surface, Widget *widget, int displayType, int channel) : Midi_FeedbackProcessor(csi,surface, widget), displayType_(displayType), channel_(channel)
+    {
+        // displayType 0x10 = Control Name, 0x13 = Total Display
+    }
+
+    virtual const char *GetName() override { return "EC4Display_Midi_FeedbackProcessor"; }
+
+    virtual void ForceClear() override
+    {
+        const PropertyList properties;
+        ForceValue(properties, "");
+    }
+
+    virtual void SetValue(const PropertyList &properties, const char * const &inputText) override
+    {
+        if (inputText != lastStringSent_) // changes since last send
+            ForceValue(properties, inputText);
+    }
+
+    // Sysex format for EC4 display:
+    //
+    // F0 00 00 00 4E 2C 1B 4E 22 10 4A 23 1C 4D 25 12 4D 26 15 4D 27 13 4D 26 1F F7 (write ctrl name display)
+    //             ^^^^^^^^ ^^^^^^^^ ^^^^^^^^ ^^^^^^^^ ^^^^^^^^ ^^^^^^^^ ^^^^^^^^
+    //            device-id     type  address     data     data     data     data
+    //                 i=11   	  t=0     a=61    d='R'    d='e'    d='s'    d='o'
+    //                      ctrl nam  ctrl 16
+    //
+    // F0 00 00 00 4E 2C 1B 4E 22 13 4A 21 1C 4D 25 12 4D 26 15 4D 27 13 4D 26 1F 4E 22 14 F7 (write/show total display)
+    //             ^^^^^^^^ ^^^^^^^^ ^^^^^^^^ ^^^^^^^^ ^^^^^^^^ ^^^^^^^^ ^^^^^^^^ ^^^^^^^^
+    //            device-id     type  address     data     data     data     data    show
+    //                 i=11      t=3     a=28     d='R'    d='e'    d='s'    d='o'  total
+    //                         total   middle                                     display
+    //		                 display 2nd line
+    virtual void ForceValue(const PropertyList &properties, const char * const &inputText) override
+    {
+        lastStringSent_ = inputText;
+
+        char tmp[BUFSZ];
+        const char *text = GetWidget()->GetSurface()->GetRestrictedLengthText(inputText, tmp, sizeof(tmp));
+
+        if (!strcmp(text,"-150.00")) text="";
+        struct
+        {
+            MIDI_event_ex_t evt;
+            char data[BUFSZ];
+        } midiSysExData;
+
+        midiSysExData.evt.frame_offset=0;
+        midiSysExData.evt.size=0;
+
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0xF0;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x00;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x00;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x00;
+        // Device ID
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x4E;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x2C;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x1B;
+        // Display Type
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x4E;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x22;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = displayType_;
+        // Channel
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x4A;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x20 | ((channel_*4 >> 4) & 0x0F);
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x10 | (channel_*4 & 0x0F);
+
+        // Display Data
+        int maxLen = displayType_ == 0x10 ? 4 : 7;
+        int cnt = 0;
+        while (cnt++ < maxLen) {
+            // The EC4 character set lines up with ASCII from 0x20 - 0x7A
+            char c = *text ? *text++ : ' ';
+            midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x4D;
+            midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x20 | ((c >> 4) & 0x0F);
+            midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x10 | (c & 0x0F);
+        }
+
+        // End of SysEx
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0xF7;
+        SendMidiSysExMessage(&midiSysExData.evt);
+    }
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class EC4DisplayMode_Midi_FeedbackProcessor : public Midi_FeedbackProcessor
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+{
+private:
+    double lastMode_;
+
+public:
+    virtual ~EC4DisplayMode_Midi_FeedbackProcessor() {}
+    EC4DisplayMode_Midi_FeedbackProcessor(CSurfIntegrator *const csi, Midi_ControlSurface *surface, Widget *widget) : Midi_FeedbackProcessor(csi, surface, widget)
+    {
+        lastMode_ = 0;
+    }
+    
+    virtual const char *GetName() override { return "EC4DisplayMode_Midi_FeedbackProcessor"; }
+
+    virtual void ForceClear() override
+    {
+        const PropertyList properties;
+        ForceValue(properties, 0.0);
+    }
+
+    virtual void SetValue(const PropertyList &properties, double value) override
+    {
+        if (value != lastMode_)
+            ForceValue(properties, value);
+    }
+    
+    virtual void ForceValue(const PropertyList &properties, double value) override
+    {
+        lastMode_ = value;
+        struct
+        {
+            MIDI_event_ex_t evt;
+            char data[BUFSZ];
+        } midiSysExData;
+
+        midiSysExData.evt.frame_offset=0;
+        midiSysExData.evt.size=0;
+
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0xF0;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x00;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x00;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x00;
+        // Device ID
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x4E;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x2C;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x1B;
+        // Display Type
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x4E;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0x22;
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = value == 0 ? 0x15 : 0x14;
+        // End of SysEx
+        midiSysExData.evt.midi_message[midiSysExData.evt.size++] = 0xF7;
+        SendMidiSysExMessage(&midiSysExData.evt);
+    }
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 class AsparionDisplay_Midi_FeedbackProcessor : public Midi_FeedbackProcessor
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 {

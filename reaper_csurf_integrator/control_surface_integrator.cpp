@@ -1314,6 +1314,7 @@ void ActionContext::GetSteppedValues(Widget *widget, Action *action,  Zone *zone
 //////////////////////////////////////////////////////////////////////////////
 // Widgets
 //////////////////////////////////////////////////////////////////////////////
+
 void Midi_ControlSurface::ProcessMidiWidget(int &lineNumber, fpistream &surfaceTemplateFile, const string_list &in_tokens)
 {
     if (in_tokens.size() < 2)
@@ -1539,6 +1540,21 @@ void Midi_ControlSurface::ProcessMidiWidget(int &lineNumber, fpistream &surfaceT
             else if (widgetType == "FB_MCUXTDisplayLower")
                 feedbackProcessor = new MCUDisplay_Midi_FeedbackProcessor(csi_, this, widget, 1, 0x15, 0x12, atoi(tokenLines[i][1].c_str()));
         }
+        else if (widgetType == "FB_EC4DisplayControl" && size == 2)
+            feedbackProcessor = new EC4Display_Midi_FeedbackProcessor(csi_, this, widget, 0x10, atoi(tokenLines[i][1].c_str()));
+        else if ((widgetType == "FB_EC4DisplayTotalUpper" || widgetType == "FB_EC4DisplayTotalLower" || widgetType == "FB_EC4DisplayTotalMidUpper" || widgetType == "FB_EC4DisplayTotalMidLower") && size == 1)
+        {
+            if (widgetType == "FB_EC4DisplayTotalUpper")
+                feedbackProcessor = new EC4Display_Midi_FeedbackProcessor(csi_, this, widget, 0x13, 0);
+            else if (widgetType == "FB_EC4DisplayTotalLower")
+                feedbackProcessor = new EC4Display_Midi_FeedbackProcessor(csi_, this, widget, 0x13, 5);
+            else if (widgetType == "FB_EC4DisplayTotalMidUpper")
+                feedbackProcessor = new EC4Display_Midi_FeedbackProcessor(csi_, this, widget, 0x13, 10);
+            else if (widgetType == "FB_EC4DisplayTotalMidLower")
+                feedbackProcessor = new EC4Display_Midi_FeedbackProcessor(csi_, this, widget, 0x13, 15);
+        }
+        else if ((widgetType == "FB_EC4DisplayMode") && size == 1)
+            feedbackProcessor = new EC4DisplayMode_Midi_FeedbackProcessor(csi_, this, widget);
         else if ((widgetType == "FB_AsparionDisplayUpper" || widgetType == "FB_AsparionDisplayLower" || widgetType == "FB_AsparionDisplayEncoder") && size == 2)
         {
             if (widgetType == "FB_AsparionDisplayUpper")
@@ -5217,7 +5233,7 @@ void Midi_ControlSurface::ProcessMidiMessage(const MIDI_event_ex_t *evt)
     int twoByteKey = evt->midi_message[0]  * 0x10000 + evt->midi_message[1]  * 0x100;
     int oneByteKey = evt->midi_message[0] * 0x10000;
 
-    // At this point we don't know how much of the message comprises the key, so try all three
+    // At this point we don't know how much of the message comprises the key, so try all possibilities
     if (Midi_CSIMessageGeneratorsByMessage_.Exists(threeByteKey))
         Midi_CSIMessageGeneratorsByMessage_.Get(threeByteKey)->ProcessMidiMessage(evt);
     else if (Midi_CSIMessageGeneratorsByMessage_.Exists(twoByteKey))
