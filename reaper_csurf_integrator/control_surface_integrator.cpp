@@ -1315,6 +1315,12 @@ void ActionContext::GetSteppedValues(Widget *widget, Action *action,  Zone *zone
 // Widgets
 //////////////////////////////////////////////////////////////////////////////
 
+struct SysExData
+{
+    MIDI_event_ex_t evt;
+    char data[512];
+};
+
 void Midi_ControlSurface::ProcessMidiWidget(int &lineNumber, fpistream &surfaceTemplateFile, const string_list &in_tokens)
 {
     if (in_tokens.size() < 2)
@@ -1363,39 +1369,90 @@ void Midi_ControlSurface::ProcessMidiWidget(int &lineNumber, fpistream &surfaceT
         MIDI_event_ex_t *message1 = NULL;
         MIDI_event_ex_t *message2 = NULL;
 
+        SysExData* msg1SysExData = new SysExData;
+        SysExData* msg2SysExData = new SysExData;
+
+        int sysexKey = 0;
+        int sysexKeyMsg2 = 0;
         int oneByteKey = 0;
         int twoByteKey = 0;
         int threeByteKey = 0;
         int threeByteKeyMsg2 = 0;
-        
-        if (size > 3)
+
+
+        // Process sysEx messages
+        if (size > 3 && strToHex(tokenLines[i][1]) == 0xF0)
         {
-            message1 = new MIDI_event_ex_t(strToHex(tokenLines[i][1]), strToHex(tokenLines[i][2]), strToHex(tokenLines[i][3]));
-            
+            int j = 1;
+            msg1SysExData->evt.size=0;
+            msg1SysExData->evt.frame_offset=0;
+            for (; j < size ; j++)
+            {
+                msg1SysExData->evt.midi_message[msg1SysExData->evt.size++] = strToHex(tokenLines[i][j]);
+                if (strToHex(tokenLines[i][j]) == 0xF7) {
+                    message1 = &msg1SysExData->evt;
+                    break;
+                }
+            }
+
+            if (j < size && strToHex(tokenLines[i][++j]) == 0xF0) {
+                msg2SysExData->evt.size=0;
+                msg2SysExData->evt.frame_offset=0;
+                for (; j < size ; j++)
+                {
+                    msg2SysExData->evt.midi_message[msg2SysExData->evt.size++] = strToHex(tokenLines[i][j]);
+                    if (strToHex(tokenLines[i][j]) == 0xF7) {
+                        message2 = &msg2SysExData->evt;
+                        break;
+                    }
+                }
+            }
             if (message1)
             {
-                oneByteKey = message1->midi_message[0] * 0x10000;
-                twoByteKey = message1->midi_message[0] * 0x10000 + message1->midi_message[1] * 0x100;
-                threeByteKey = message1->midi_message[0] * 0x10000 + message1->midi_message[1] * 0x100 + message1->midi_message[2];
+                for (int s = 0; s < message1->size; s++) {
+                    sysexKey = (sysexKey << 1) | (sysexKey >> (sizeof(sysexKey)*8 - 1));
+                    sysexKey ^= message1->midi_message[s];
+                }
+            }
+            if (message2)
+            {
+                for (int s = 0; s < message2->size; s++) {
+                    sysexKeyMsg2 = (sysexKeyMsg2 << 1) | (sysexKeyMsg2 >> (sizeof(sysexKeyMsg2)*8 - 1));
+                    sysexKeyMsg2 ^= message2->midi_message[s];
+                }
             }
         }
-        if (size > 6)
-        {
-            message2 = new MIDI_event_ex_t(strToHex(tokenLines[i][4]), strToHex(tokenLines[i][5]), strToHex(tokenLines[i][6]));
-            
-            if (message2)
-                threeByteKeyMsg2 = message2->midi_message[0] * 0x10000 + message2->midi_message[1] * 0x100 + message2->midi_message[2];
+        // Otherwise process MIDI messages
+        else {
+            if (size > 3)
+            {
+                message1 = new MIDI_event_ex_t(strToHex(tokenLines[i][1]), strToHex(tokenLines[i][2]), strToHex(tokenLines[i][3]));
+
+                if (message1)
+                {
+                    oneByteKey = message1->midi_message[0] * 0x10000;
+                    twoByteKey = message1->midi_message[0] * 0x10000 + message1->midi_message[1] * 0x100;
+                    threeByteKey = message1->midi_message[0] * 0x10000 + message1->midi_message[1] * 0x100 + message1->midi_message[2];
+                }
+            }
+            if (size > 6)
+            {
+                message2 = new MIDI_event_ex_t(strToHex(tokenLines[i][4]), strToHex(tokenLines[i][5]), strToHex(tokenLines[i][6]));
+
+                if (message2)
+                    threeByteKeyMsg2 = message2->midi_message[0] * 0x10000 + message2->midi_message[1] * 0x100 + message2->midi_message[2];
+            }
         }
         // Control Signal Generators
         
-        if (widgetType == "AnyPress" && (size == 4 || size == 7) && message1)
-            AddCSIMessageGenerator(twoByteKey, new AnyPress_Midi_CSIMessageGenerator(csi_, widget, message1));
-        else if (widgetType == "Press" && size == 4 && message1)
-            AddCSIMessageGenerator(threeByteKey, new PressRelease_Midi_CSIMessageGenerator(csi_, widget, message1));
-        else if (widgetType == "Press" && size == 7 && message1 && message2)
+        if (widgetType == "AnyPress" && (size == 4 || size == 7 || sysexKey) && message1)
+            AddCSIMessageGenerator(twoByteKey ? twoByteKey : sysexKey, new AnyPress_Midi_CSIMessageGenerator(csi_, widget, message1));
+        else if (widgetType == "Press" && (size == 4 || sysexKey) && message1 && !message2)
+            AddCSIMessageGenerator(threeByteKey ? threeByteKey: sysexKey, new PressRelease_Midi_CSIMessageGenerator(csi_, widget, message1));
+        else if (widgetType == "Press" && (size == 7 || sysexKey) && message1 && message2)
         {
-            AddCSIMessageGenerator(threeByteKey, new PressRelease_Midi_CSIMessageGenerator(csi_, widget, message1, message2));
-            AddCSIMessageGenerator(threeByteKeyMsg2, new PressRelease_Midi_CSIMessageGenerator(csi_, widget, message1, message2));
+            AddCSIMessageGenerator(threeByteKey ? threeByteKey: sysexKey, new PressRelease_Midi_CSIMessageGenerator(csi_, widget, message1, message2));
+            AddCSIMessageGenerator(threeByteKeyMsg2 ? threeByteKeyMsg2: sysexKeyMsg2, new PressRelease_Midi_CSIMessageGenerator(csi_, widget, message1, message2));
         }
         else if (widgetType == "Fader14Bit" && size == 4)
             AddCSIMessageGenerator(oneByteKey, new Fader14Bit_Midi_CSIMessageGenerator(csi_, widget));
@@ -5229,6 +5286,14 @@ void Midi_ControlSurface::ProcessMidiMessage(const MIDI_event_ex_t *evt)
         ShowConsoleMsg(buffer);
     }
 
+    int sysexKey = 0;
+    if (evt->midi_message[0] == 0xF0) {
+        for (int s = 0; s < evt->size; s++) {
+            sysexKey = (sysexKey << 1) | (sysexKey >> (sizeof(sysexKey)*8 - 1));
+            sysexKey ^= evt->midi_message[s];
+        }
+    }
+
     int threeByteKey = evt->midi_message[0]  * 0x10000 + evt->midi_message[1]  * 0x100 + evt->midi_message[2];
     int twoByteKey = evt->midi_message[0]  * 0x10000 + evt->midi_message[1]  * 0x100;
     int oneByteKey = evt->midi_message[0] * 0x10000;
@@ -5240,6 +5305,9 @@ void Midi_ControlSurface::ProcessMidiMessage(const MIDI_event_ex_t *evt)
         Midi_CSIMessageGeneratorsByMessage_.Get(twoByteKey)->ProcessMidiMessage(evt);
     else if (Midi_CSIMessageGeneratorsByMessage_.Exists(oneByteKey))
         Midi_CSIMessageGeneratorsByMessage_.Get(oneByteKey)->ProcessMidiMessage(evt);
+    else if (Midi_CSIMessageGeneratorsByMessage_.Exists(sysexKey)) {
+        Midi_CSIMessageGeneratorsByMessage_.Get(sysexKey)->ProcessMidiMessage(evt);
+    }
 }
 
 void Midi_ControlSurface::SendMidiSysExMessage(MIDI_event_ex_t *midiMessage)
